@@ -1,0 +1,207 @@
+---
+title: "Detección Anomalías"
+subtitle: "Caso Retail"
+date: "`r Sys.Date()`"
+author: "Grupo 10"
+output:
+  rmdformats::html_clean:
+    highlight: kate
+---
+
+```{r setup, echo=FALSE, cache=FALSE, include=FALSE}
+library(knitr)
+library(rmdformats)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(skimr)
+library(outliers)
+library(stats)
+library(AnomalyDetection)
+library(ggplot2)
+library(FNN)
+library(dbscan)
+library(cluster)
+
+
+## Global options
+options(max.print="75")
+opts_chunk$set(echo=TRUE,
+               cache=TRUE,
+               prompt=FALSE,
+               tidy=TRUE,
+               comment=NA,
+               message=FALSE,
+               warning=FALSE)
+opts_knit$set(width=75)
+```
+
+
+
+Un valor atípico (outlier) es una observación que tiene características diferentes a la mayor parte de los datos, es decir, es numéricamente distante del resto de los datos y puede influir en la inferencia de los mismos, por lo cual es indispensable realizar un análisis exhaustivo para descartar la presencia de estas observaciones y dado que existan realizar el respectivo tratamiento. 
+
+La base de datos a analizarse presenta 2037 observaciones y 8 atributos. El proceso de detección de anomalías iniciará con métodos gráficos como histogramas, diagramas de caja y diagramas de dispersión. Primero se comprueba la presencia de atípicos de forma univariante es decir analizando cada variable por sí sola y luego las variables en su conjunto.
+
+```{r}
+df<- read_excel("Base_Retail_Imputacion.xlsx")
+skim(df)
+```
+
+## Histogramas y Gráficos de densidad
+
+Como se puede evidenciar, las variables __Éxito, Mes, NRO VISITAS, Provincia y CAPITAL__ son cualitativas, por lo cual las estableceremos como factor.
+
+```{r message=FALSE}
+df$Éxito<-as.factor(df$Éxito)
+df$Provincia<-as.factor(df$Provincia)
+df$CAPITAL<-as.factor(df$CAPITAL)
+df$Mes<-as.integer(df$Mes)
+df$`NRO VISITAS`<-as.factor(df$`NRO VISITAS`)
+
+df %>%
+  select_if(is.factor) %>%
+  gather() %>%
+  ggplot(aes(value)) + geom_bar() + facet_wrap(~key,scales='free') +
+  theme(axis.text=element_text(size=6))
+```
+
+En los histogramas se observa que, en el primer caso el histograma de **CAPITAL** revela que las ventas que se realizan en ciudades que son capitales de pronvincia son alrededor de 3 veces mayores en relación a las ventas en las otras ciudades. 
+
+El histograma de **Éxito** revela que aproximadamente de 3 chips vendidos 1 no es entregado y por último el histograma de **Provincia** evidencia claramente que la provincia con mayor ventas es Pichincha seguido por Guayas, además no existen registro de ventas en Galápagos.
+
+Por otro lado la empresa realiza hasta 3 visitas al cliente y el gráfico indica que en la mayoría de los casos se realiza una sola visita. 
+
+```{r}
+df%>%
+  select_if(is.numeric) %>%
+  gather() %>%
+  ggplot(aes(value)) + geom_density() + facet_wrap(~key,scales='free') +
+  theme(axis.text=element_text(size=6))
+```
+
+En cuanto a los atributos numéricos, los datos revelan que los clientes potenciales tienen alrededor de 20 a 65 años, y el cliente promedio tiene aproximadamente 42 años, por otra parte la **Eficiencia** se concentra en valores muy cercanos a 0, esto es debido a que la Eficiencia está tomada en relación al total de ventas realizadas por provincia y hay provincias en las cuales solo hubo una única venta y no fue entregado y existen provincias en las cuales hay gran cantidad de ventas y el porcentaje de entregados y no entregados difiere. 
+
+Por último el **Mes** refleja que en el periodo analizado las ventas de los priemros meses fueron reduciendo, sin embargo, luego se observa una tendencia creciente.
+
+```{r}
+plot(Éxito~Provincia,data=df, xlab = "Provincia", ylab = "Éxito")
+```
+
+El gráfico anterior muestra la eficiencia por provincia, es decir cuantos chips fueron entregados(color oscuro) y cuantos no (color claro), evidenciando lo mencionado anteriormente, Cotopaxi es la provincia con mayor eficiencia sin embargo, es una de las provincias con menor registro de ventas, sin embargo lo que si es claro es que en Pichincha que es la provincia con mayor ventas también es una de las provincias con mayor eficiencia. 
+
+Mientras que Zamora Chinchipe solo tiene un registro de venta que no fue entregado, sin embargo no se puede asegurar que sea un dato atípico, ya que en las provincias del Oriente se evidencian ventas mínimas.
+
+Con el fin de evidenciar de manera más clara la presencia de atípicos en cada atributo se realizan diagramas de caja.
+
+```{r}
+df<-df%>%mutate(Fecha=ifelse(Mes<3,paste(01,Mes,2020,sep = "/"),paste(01,Mes,2019,sep = "/")))
+
+
+df$Fecha<-as.Date(df$Fecha,"%d/%m/%Y")
+
+boxplot(Eficiencia~Fecha,data=df)
+
+boxplot(df$Provincia, df$Edad)
+```
+
+En el diagrama de Caja respecto a la fecha de venta y la eficiencia se observa la presencia de datos atípicos, sin embargo. Como se mencionó anteriormente estos no deberían ser considerados como tal ya que al no tener una proporción igual de ventas en cada provincia podría darse este caso. 
+
+Mientras que en el Diagrama de Caja de las otras variables no se evidencian valores atípicos.
+
+## Considerando como serie temporal
+
+```{r}
+media_mensual<-tapply(df$Eficiencia, df$Fecha, FUN = mean)
+media_mensual
+kable(round(media_mensual,4),format = "markdown",col.names = "Medias Mensuales en Eficiciencia")
+```
+
+```{r}
+outliers<-AnomalyDetectionVec(as.vector(media_mensual), period = 2, direction = 'both', plot = T)
+
+outliers$plot
+
+outliers$anoms
+```
+
+En este gráfico ya se marca, el valor atípico, este se da en cuanto a la eficiencia de entregas en el mes de noviembre y tiene una eficiencia promedio de 0.0076.
+
+## Clustering (Matriz de distancia)
+
+Para efectuar un análisis de agrupamiento en datos mixtos, es necesario establecer una métrica adecuada. En nuestro caso utilizaremos la distancia de _gower_
+
+Además utilizaremos la librería cluster y en particular la función daisy
+
+```{r}
+# Obtendremos la matriz de distancias mediante la metrica de gower para datos mixtos
+dissE <- daisy(df%>%select(-c(...1,Fecha)), metric="gower")
+
+summary(dissE)
+str(dissE)
+dissE_dist<-as.matrix(dissE)
+View(dissE_dist) # Matriz de distancias con la metrica gower
+
+# Aplicaremos la tecnica de particionamiento K-Medoids
+cluster<-pam(dissE_dist, diss = T, k=5)
+
+# Cuantos casos existen en cada cluster
+table(cluster$clustering)
+
+cluster$clusinfo
+
+which.max(rowMeans(dissE_dist))
+```
+
+El agrupamiento anterior, se realizó mediante la técnica K-Medoids, y se han generado 5 grupos. Además, del registro 1887 se sospecha una anomalía pues posee la mayor distancia promedio.
+
+Dado que ya se tiene una matriz de distancias se puede aplicar otros métodos de agrupación como son: _Knn_ y _lof_.
+
+## k-nearest neighbors distance (K vecinos cercanos)
+
+```{r}
+
+x<-dissE_dist # Matriz de distancias
+str(x)
+
+# Calculamos la distancia entre 5 vecinos mas cercanos
+df_nn <- get.knn(x, k = 5)
+head(df_nn$nn.dist)
+
+# Analizemos para el registro 5 la distancia mas corta al siguiente cluster
+df_nn$nn.dist[5, 1]
+# Analizemos para el registro 5, el registro mas cercano 
+df_nn$nn.index[5,1]
+
+kable(df[c(5,109),])
+
+
+df_nnd<-rowMeans(df_nn$nn.dist)
+which.max(df_nnd)
+```
+
+Es decir que se detecta una anomalia en el registro 1887, como se obtuvo en el análisis previo.
+
+## Local Outlier Factor  (lof) vs Knn
+
+Se realizará una comparación entre ambos métodos, para esto se normalizará nuestra matriz de distancias, es decir la centramos y reducimos.
+
+```{r}
+x_scaled<- scale(x)
+
+x_nn <- get.knn(x_scaled, k = 5)
+x$score_knn <- rowMeans(x_nn$nn.dist)     
+
+# Calculate and append LOF as a new column
+x$score_lof <- lof(x_scaled, k = 5)
+
+# Find the row location of highest kNN
+which.max(x$score_knn)
+
+# Find the row location of highest LOF
+which.max(x$score_lof)
+
+```
+
+Finalmente, se evidencia que analizando datos atípicos locales mediante la funcion lof; se ha detecto al registro 1981 como anomalía.
+
+

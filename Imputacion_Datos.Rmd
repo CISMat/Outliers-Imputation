@@ -1,0 +1,235 @@
+---
+title: "Imputación de Datos"
+author: "Grupo 10"
+date: "3/7/2020"
+output: html_document
+---
+
+
+
+El presente trabajo indica el proceso para la imputación de datos el cual se realiza cuando la base de datos presenta datos faltantes. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(skimr)
+library(naniar)
+library(dplyr)
+library(mice)
+library(xlsx)
+```
+
+## BASE DE DATOS
+
+Se lee la base de datos a utilizar, en la cual se encuentran las variables:
+  
+- __Mes__:corresponde al número de mes . 
+- __Nro de visitas__: el número de veces de acercamiento que tiene la empresa con el cliente.
+- **Exito**: indica si el chip fue entregado o no.
+- **Capital**: indica si la ciudad de destino es capital de una provincia. 
+- __Eficiencia__:registra el porcentaje de eficiencia de la entrega.
+- __Provincia__: indica la provincia de destino.
+- __Edad__: registra el rango de edad de los clientes.
+
+
+```{r}
+df<- read_excel("basenueva.xlsx")
+skim(df)
+```
+
+Entre estas variables se observa que los atributos correspondientes al Mes y Edad tienen 193 y 40 datos faltantes respectivamente. Obteniendo asi un total de 233 datos faltantes en la base de datos Retail.
+
+```{r}
+n_miss(df)
+n_miss(df$Mes)
+n_miss(df$Edad)
+```
+
+Se observa el porcentaje de missing que tienen cada variable en relación al total de observaciones que se posee en la base,en este caso se tiene un total de 2037 datos. 
+
+La variable **mes** tiene 9.47% de datos faltantes. 
+
+La variable **edad** tiene 1.96% de datos faltantes. 
+
+```{r}
+apply(is.na(df),2,FUN="mean")*100
+```
+Como se puede observar el porcentaje de datos perdido es menor al 20% por lo que se puede hacer la imputación.
+
+Se procede a realizar un resumen de las variables que se tiene con sus datos y porcentajes correspondientes de datos faltantes, por lo que se concluye que **Edad** y **Mes** son variables a imputar.  
+```{r}
+miss_var_summary(df)
+miss_var_table(df)
+
+miss_case_summary(df)
+miss_case_table(df)
+```
+
+```{r}
+df %>% group_by('Éxito') %>% miss_var_summary()
+df %>% group_by('Éxito') %>% miss_case_summary()
+```
+
+### IMPUTACIÓN POR MODA 
+
+En el caso de la variable **Mes**, una imputación muy sencilla sería tomar la moda para completar estos datos faltantes, sin embargo esta aplicación puede generar errores.
+
+```{r message=FALSE, warning=FALSE}
+# Moda
+
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+Data_Impu_Moda<-ifelse(is.na(df$Mes),getmode(df$Mes),df$Mes)
+```
+
+El siguiente gráfico indica la imputación de la variable Mes, la figura en color rojo son los datos conocidos y la figura en color verde es la imputación, sin embargo se observa incosistencias en esta imputación puesto que no se ajusta la imputación con los datos de la base. 
+
+```{r}
+par(mfrow=c(1,1))
+plot(density(df$Mes,na.rm = T),col=2,main="Mes") #ROJO CONOCIDO 
+lines(density(Data_Impu_Moda),col=3) # VERDE IMPUTACION
+```
+
+### IMPUTACIÓN CON LA MEDIA                           
+
+La librería mice permite realizar la imputacion de los datos mediante diferentes técnicas. En particular con la funcion mice, se generá: Multivariate Imputations by Chained Equations (MICE).
+
+Imputar con algún estadístico de tendencia central (media, mediana, moda) consiste en cambiar todos los valores faltantes por el promedio de los datos que tenemos. Sin embargo el problema es que se esta disminuyendo artificialmente la variabilidad de la muestra. 
+
+```{r message=FALSE, warning=FALSE}
+# Media
+
+imputed_data <- mice(df%>%select(Edad,Mes), method = "mean")
+Data_Impu_Media <- mice::complete(imputed_data)
+
+sum(is.na(Data_Impu_Media))
+```
+
+Como se observa en el gráfico los datos por media para la edad y mes han sido imputados. Por otro lado se visualiza que la imputación no se ajusta del todo con los datos de la base. 
+
+```{r}
+par(mfrow=c(1,2))
+
+plot(density(df$Edad,na.rm = T),col=2,main="Edad") 
+lines(density(Data_Impu_Media$Edad),col=3)  
+plot(density(df$Mes,na.rm = T),col=2,main="Mes")
+lines(density(Data_Impu_Media$Mes),col=3)
+
+```
+
+### REGRESIÓN LINEAL USANDO BOOSTRAP
+
+La imputación por regresión produce estimaciones que no son sesgadas de las medias bajo MCAR además esta imputación de regresión fortalece por simulación las relaciones en los datos.
+
+```{r warning=FALSE}
+# Regresión lineal usando bootstrap
+
+imputed_data <- mice(df%>%select(Edad,Mes), method = "norm.boot")
+Data_Impu_boot <- mice::complete(imputed_data)
+
+sum(is.na(Data_Impu_boot))
+
+par(mfrow=c(1,2))
+
+plot(density(df$Edad,na.rm = T),col=2,main="Edad")
+lines(density(Data_Impu_boot$Edad),col=3)
+plot(density(df$Mes,na.rm = T),col=2,main="Mes")
+lines(density(Data_Impu_boot$Mes),col=3)
+
+```
+
+__*IMPORTANTE*__
+
+Es importante señalar que para los dos anteriores metodos se asumió a la variable **Mes** como una variable cuantitativa, cuando realmente debe ser tratada como cualitativa es decir una factor de 12 categorias.
+
+### ÁRBOLES DE CLASIFICACIÓN MEDIANTE REGRESIONES
+
+El objetivo de estos métodos es obtener individuos más homogéneos con respecto a la variable que se desea discriminar dentro de cada subgrupo y heterogéneos entre los subgrupos. Para la construcción del árbol se requiere información de variables explicativas.
+
+```{r}
+
+df$Mes<-as.factor(df$Mes)
+imputed_data <- mice(df%>%select(Edad,Mes), method = "cart")
+Data_Impu_tree <- mice::complete(imputed_data)
+
+sum(is.na(Data_Impu_tree))
+
+par(mfrow=c(1,2))
+
+plot(density(df$Edad,na.rm = T),col=2,main="Edad")
+lines(density(Data_Impu_tree$Edad),col=3)
+
+#Para graficar les hacemos numericas de lo contrario usaríamos histograma
+plot(density(as.numeric(df$Mes),na.rm = T),col=2,main="Mes")
+lines(density(as.numeric(Data_Impu_tree$Mes)),col=3)
+
+```
+
+### RANDOM FOREST
+
+El bosque aleatorio es un algoritmo de clasificación que consta de una serie de árboles de decisiones.Su predicción es más precisa que la de un árbol en particular. Se procede a realizar este método para las dos variables.
+
+```{r}
+# Random forest
+
+df$Mes<-as.factor(df$Mes)
+imputed_data <- mice(df%>%select(Edad,Mes), method = "rf")
+Data_Impu_tree <- mice::complete(imputed_data)
+
+sum(is.na(Data_Impu_tree))
+```
+
+Con los datos imputados podemos ver gráficamente cuánto se ajusta la imputación realizada con la base original en este caso se ajustan correctamente.
+
+```{r}
+
+par(mfrow=c(1,2))
+
+plot(density(df$Edad,na.rm = T),col=2,main="Edad")
+lines(density(Data_Impu_tree$Edad),col=3)
+
+#Para graficar les hacemos numericas de lo contrario usaríamos histograma
+plot(density(as.numeric(df$Mes),na.rm = T),col=2,main="Mes")
+lines(density(as.numeric(Data_Impu_tree$Mes)),col=3)
+
+```
+
+### COMBINACIÓN DE MÉTODOS
+
+Se determina que se puede combinar los métodos, en este caso se especifíca como vector los métodos a utilizarse para cada variable. 
+
+Se utilizará el método de regresión bayesiana para la variable numerica **Edad** y se aplicará el método de random forest para la variable categórica **Mes** puesto que es la mas precisa.  
+
+```{r}
+# Combinado 
+df$Mes<-as.factor(df$Mes)
+imputed_data <- mice(df%>%select(Edad,Mes), method = c("norm",'cart'))
+Data_Impu_Mix <- mice::complete(imputed_data)
+
+sum(is.na(Data_Impu_Mix))
+```
+
+Con los datos imputados podemos ver gráficamente cuánto se ajusta nuestra imputación con la base origina en este caso se ajustan bien. 
+
+```{r}
+par(mfrow=c(1,2))
+
+plot(density(df$Edad,na.rm = T),col=2,main="Edad")
+lines(density(Data_Impu_Mix$Edad),col=3)
+plot(density(as.numeric(df$Mes),na.rm = T),col=2,main="Mes")
+lines(density(as.numeric(Data_Impu_Mix$Mes)),col=3)
+
+```
+
+Finalmente se reemplaza las variables imputadas en la base original.
+```{r}
+
+df<-df%>%mutate(Mes = Data_Impu_Mix$Mes, Edad = Data_Impu_Mix$Edad)
+skim(df)
+
+#write.xlsx(df, file = "Base_Retail_Imputacion.xlsx", sheetName = "DATOS", append = TRUE)
+```
+
